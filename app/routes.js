@@ -3,15 +3,27 @@ var async = require('async');
 var bodyParser = require('body-parser');
 var bodyParserURLEncoded = bodyParser.urlencoded({extended: true});
 
+var fs = require('fs');
+
 var validator = require('validator');
 var bcrypt = require('bcrypt');
 var crypto = require('crypto');
+
+var colorGen = require('color-assignment-generator');
+
+fs.readFile(__dirname + "/colorFile/color.txt", function(err, data) {
+    colorGen.setSavedValues(JSON.parse(data));
+});
 
 var nodemailer = require('nodemailer');
 var markdown = require('nodemailer-markdown').markdown;
 
 var User = require('../app/models/user');
-var CaseSets = require('../app/models/caseSets');
+var Lectures = require('../app/models/caseSets');
+var Cases = require('../app/models/case');
+var Scan = require('../app/models/scan');
+var Slice = require('../app/models/slice');
+var Answer = require('../app/models/answer');
 
 var prefix = "/api/v1/"
 
@@ -63,7 +75,7 @@ function reportError(status, error, response) {
     response.send()
 }
 
-var updateDates = {};
+var wsClientMap = {};
 
 //nothing is validated right now. that should be fixed
 
@@ -136,6 +148,7 @@ module.exports = function(http, ws) {
                                 "email": req.body.email,
                                 "password": bcrypt.hashSync(req.body.password,10),
                                 "caseSets": [],
+                                "color": colorGen.getColor(),
                                 "verified": false,
                                 "resetPasswordToken": token,
                                 "resetPasswordExpires": Date.now() + 3600000 //1 hour
@@ -145,6 +158,13 @@ module.exports = function(http, ws) {
                                 if (err) {
                                     res.status(404).end();
                                 } else {
+
+                                    fs.writeFile(__dirname + "/colorFile/color.txt", JSON.stringify(colorGen.getSavedValues()), function(err) {
+                                        if (err) {
+                                            return console.log(err);
+                                        }
+                                    });
+
                                     done(err, token, user);
                                 }
                             });
@@ -287,7 +307,7 @@ module.exports = function(http, ws) {
         });
     });
 
-    http.get(prefix+'users', passport.authenticate('local', {session: false}), function(req, res) {
+    http.get(prefix+'users', /*passport.authenticate('local', {session: false}),*/ function(req, res) {
             // var userQuery = validator.escape(req.query.id);
             var userQuery = req.query.id;
 
@@ -342,31 +362,378 @@ module.exports = function(http, ws) {
         }
     });
 
-    http.get(prefix+'casesets', passport.authenticate('local', {session: false}), function(req, res) {
-        // var setID = validator.escape(req.query.id);
-        // var lecturerID = validator.escape(req.query.lecturerID);
-        var setID = req.query.id;
+    // http.get(prefix+'casesets',/* passport.authenticate('local', {session: false}), */function(req, res) {
+    //     // var setID = validator.escape(req.query.id);
+    //     // var lecturerID = validator.escape(req.query.lecturerID);
+    //     var setID = req.query.id;
+    //     var lecturerID = req.query.lecturerID;
+    //
+    //     if (setID) {
+    //         CaseSets.findOne({"setID": setID}, function(err, caseSet) {
+    //             if (err) {
+    //                 reportError(404, err, res);
+    //             } else {
+    //                 res.send(caseSet);
+    //             }
+    //         });
+    //     } else if (lecturerID) {
+    //         CaseSets.find({"owners": lecturerID}, function(err, caseSets) {
+    //             if (err) {
+    //                 reportError(404, err, res);
+    //             } else {
+    //                 res.send(caseSets);
+    //             }
+    //         });
+    //     } else {
+    //         reportError(404, "No query specified", res);
+    //     }
+    // });
+
+    http.get(prefix+'lectures', function(req, res) {
+        Lectures.find({}, function(err, lectures) {
+            res.send(lectures);
+        });
+    });
+
+    http.put(prefix+'lectures', bodyParserURLEncoded, function(req, res) {
+        var lectureName = req.body.name;
+        var lectureOwner = req.body.owner;
+
+        var lecture = new Lectures({
+            "name": lectureName,
+            "owners": [lectureOwner],
+            "cases": []
+        });
+
+        lecture.save(function(err) {
+            if (err) {
+                res.status(404).end();
+            } else {
+                res.status(200).end();
+            }
+        });
+    });
+
+    http.post(prefix+'lectures', bodyParserURLEncoded, function(req, res) {
+
+        var lectureID = req.body.lectureID;
+        var lectureTitle = req.body.lectureTitle;
+
+        Lectures.update({"_id": lectureID}, {"name": lectureTitle}, function(err, numChanged) {
+            if (err) {
+                res.status(500).end();
+            } else {
+                res.status(200).end();
+            }
+        });
+    });
+
+    http.get(prefix+'caseSet', function(req, res) {
+
+
+        var lectureID = req.query.lectureID;
         var lecturerID = req.query.lecturerID;
 
-        if (setID) {
-            CaseSets.findOne({"setID": setID}, function(err, caseSet) {
-                if (err) {
-                    reportError(404, err, res);
-                } else {
-                    res.send(caseSet);
-                }
+        var params = {};
+
+        if (lectureID) {
+
+            Lectures.findOne({"_id": lectureID}, function(err, lecture) {
+
+                var caseRetriever = function(caseID, callback) {
+                    Cases.findOne({"_id": caseID}, function(err, retrievedCase) {
+                        callback(err, retrievedCase);
+                    });
+                };
+
+                async.map(lecture.cases, caseRetriever, function(err, cases) {
+                    var responseData = {
+                        "name": lecture["name"],
+                        "owners": lecture["owners"],
+                        "cases": cases,
+                        "lectureID": lectureID
+                    };
+
+                    res.send(responseData);
+                });
             });
+
         } else if (lecturerID) {
-            CaseSets.find({"owners": lecturerID}, function(err, caseSets) {
+
+            Lectures.find({"owners": lecturerID}, function(err, lectures) {
+
+                var caseRetriever = function(caseID, callback) {
+                    Cases.findOne({"_id": caseID}, function(err, retrievedCase) {
+                        callback(err, retrievedCase);
+                    });
+                };
+
+                var lectureCaseList = function(lecture, callback) {
+                    async.map(lecture.cases, caseRetriever, function(err, cases) {
+                        var responseData = {
+                            "name": lecture["name"],
+                            "owners": lecture["owners"],
+                            "cases": cases,
+                            "lectureID": lecture["_id"]
+                        };
+                        callback(err, responseData);
+                    });
+                }
+
+                async.map(lectures, lectureCaseList, function(err, newLectures) {
+                    res.send(newLectures);
+                });
+            });
+        }
+    });
+
+    http.get(prefix+'cases', function(req, res) {
+
+        var lectureOwnerID = req.query.lectureOwnerID;
+        var lectureID = req.query.lectureID;
+        var caseID = req.query.caseID;
+
+        if (lectureOwnerID) {
+            Cases.find({"owners": lectureOwnerID}, function(err, cases) {
+                res.send(cases);
+            });
+
+        } else if (lectureID) {
+
+            async.waterfall([
+
+                function(done) {
+                    Lectures.findOne({"_id": lectureID}, function(err, lecture) {
+                        done(err, lecture);
+                    });
+                },
+
+                function(lecture, done) {
+
+                    var caseRetriever = function(caseID, callback) {
+                        Cases.findOne({"_id": caseID}, function(err, retrievedCase) {
+                            callback(err, retrievedCase);
+                        });
+                    }
+
+                    async.map(lecture.cases, caseRetriever, function(err, cases) {
+                        res.send(cases);
+                    });
+                }
+
+            ]);
+
+        } else if (caseID) {
+
+            Cases.findOne({"_id": caseID}, function(err, retrievedCase) {
+                res.send(retrievedCase);
+            });
+
+        } else {
+            res.status(404).end();
+        }
+    });
+
+    http.put(prefix+'cases', bodyParserURLEncoded, function(req, res) {
+
+        var lectureID = req.body.lectureID;
+        var data = req.body;
+        // var caseName = req.query.name;
+        // var scans = req.query.scans;
+        // var patientInfo = req.query.patientInfo;
+        // var owner = req.query.owner;
+
+        var sliceCreator = function(slice, cb) {
+            var newSlice = new Slice({
+                "url": slice["url"],
+                "hasDrawing": slice["hasDrawing"]
+            });
+
+            cb(null, newSlice);
+        };
+
+        var scanCreator = function(scan, cb) {
+            async.map(scan["slices"], sliceCreator, function(err, slices) {
+
+                var newScan = new Scan({
+                    "name": scan["name"],
+                    "hasDrawing": scan["hasDrawing"],
+                    "slices": slices
+                });
+
+                cb(null, newScan);
+            });
+        };
+
+        async.map(data["scans"], scanCreator, function(err, scans) {
+
+            var newCase = new Cases({
+                "date": (new Date()).getTime(),
+                "name": data["name"],
+                "patientInfo": data["patientInfo"],
+                "owners": data["owners"],
+                "scans": scans
+            });
+
+            newCase.save(function(err) {
                 if (err) {
-                    reportError(404, err, res);
+                    console.log(err);
+                    res.status(404).end();
                 } else {
-                    res.send(caseSets);
+
+                    if (lectureID) {
+                        Lectures.findOne({"_id": lectureID}, function(err, lecture) {
+
+                            lecture["cases"].push(newCase["_id"]);
+
+                            lecture.save(function(err) {
+                                if (err) {
+                                    console.log(err);
+                                    res.status(404).end();
+                                } else {
+                                    res.status(200).end();
+                                }
+                            })
+
+                        });
+
+                    } else {
+                        res.status(200).end();
+                    }
                 }
             });
-        } else {
-            reportError(404, "No query specified", res);
+        });
+
+    });
+
+    http.post(prefix+'cases', bodyParserURLEncoded, function(req, res) {
+
+        var caseID = req.body.caseID;
+        var caseTitle = req.body.caseTitle;
+
+        var scanID = req.body.scanID;
+        var scanTitle = req.body.scanTitle;
+
+        var patientInfo = req.body.patientInfo;
+
+        if (caseTitle) {
+            Cases.update({"_id": caseID}, {"name": caseTitle}, function(err, numChanged) {
+                if (err) {
+                    res.status(500).end();
+                } else {
+                    res.status(200).end();
+                }
+            });
+
+        } else if (scanTitle) {
+            Cases.findOne({"_id": caseID}, function(err, retrievedCase) {
+                var scan = retrievedCase["scans"].filter(function(s) {
+                    return s["_id"] == scanID;
+                })[0];
+
+                if (scan) {
+                    scan["name"] = scanTitle;
+
+                    retrievedCase.save(function(err) {
+                        if (err) {
+                            res.status(500).end();
+                        } else {
+                            res.send(retrievedCase);
+                        }
+                    });
+                }
+            });
+        } else if (patientInfo) {
+            Cases.update({"_id": caseID}, {"patientInfo": patientInfo}, function(err, numChanged) {
+                if (err) {
+                    res.status(500).end();
+                } else {
+                    res.status(200).end();
+                }
+            });
         }
+    });
+
+    http.get(prefix+'answer', function(req, res) {
+        var lectureID = req.query.lectureID;
+        var caseID = req.query.caseID;
+        var ownerID = req.query.ownerID;
+
+        if (ownerID && lectureID && caseID) {
+            Answer.findOne({"lectureID": lectureID, "caseID": caseID, "owners": ownerID}, function(err, answer) {
+
+                if (err) {
+                    res.status(500).end();
+                } else if (answer == null) {
+                    res.status(404).end();
+                } else {
+                    res.send(answer);
+                }
+            });
+
+        } else if (lectureID && caseID) {
+            Answer.find({"lectureID": lectureID, "caseID": caseID}, function(err, answers) {
+                if (err) {
+                    res.status(500).end();
+                } else {
+                    res.send(answers);
+                }
+            });
+
+        } else {
+            res.status(500).end();
+        }
+    });
+
+    http.put(prefix+'answer', bodyParserURLEncoded, function(req, res) {
+        var lectureID = req.body.lectureID;
+        var caseID = req.body.caseID;
+        var owners = req.body.owners;
+        var groupName = req.body.groupName;
+        var drawings = req.body.drawings;
+        var colors = req.body.colors;
+
+        Answer.findOne({"lectureID": lectureID, "caseID": caseID, "owners": JSON.parse(owners)}, function(err, answer) {
+            if (answer != null) {
+                answer["drawings"] = JSON.parse(drawings);
+                answer["groupName"] = groupName;
+                answer["submissionDate"] = (new Date()).getTime();
+
+                answer.save(function(err) {
+                    if (err) {
+                        res.status(500).end();
+                    } else {
+                        if (wsClientMap[lectureID]) {
+                            wsClientMap[lectureID].send("UPDATE");
+                        }
+                        res.status(200).end();
+                    }
+                });
+
+            } else {
+
+                var newAnswer = new Answer({
+                    "lectureID": lectureID,
+                    "caseID": caseID,
+                    "owners": JSON.parse(owners),
+                    "groupName": groupName,
+                    "drawings": JSON.parse(drawings),
+                    "colors": JSON.parse(colors),
+                    "submissionDate": (new Date()).getTime()
+                });
+
+                newAnswer.save(function(err) {
+                    if (err) {
+                        res.status(500).end();
+                    } else {
+                        if (wsClientMap[lectureID] && wsClientMap[lectureID].readyState === 1) {
+                            wsClientMap[lectureID].send("UPDATE");
+                        }
+                        res.status(200).end();
+                    }
+                });
+            }
+        });
     });
 
     http.post(prefix+'submitanswer', bodyParserURLEncoded, passport.authenticate('local', {session: false}), function(req, res) {
@@ -378,6 +745,7 @@ module.exports = function(http, ws) {
         var caseID = req.body.caseID;
         var owners = req.body.owners;
         var answerName = req.body.answerName;
+        var colors = req.body.colors;
 
         //rename this shit
         var answerData = req.body.drawings;
@@ -394,6 +762,7 @@ module.exports = function(http, ws) {
                         "owners": JSON.parse(owners),
                         "answerName": answerName,
                         "drawings": JSON.parse(answerData),
+                        "colors": JSON.parse(colors),
                         "submissionDate": (new Date()).getTime()
                     }
 
@@ -433,19 +802,20 @@ module.exports = function(http, ws) {
                         } else {
                             res.send(caseSet)
                         }
-                    })
+                    });
                 }
-            })
+            });
         }
-    })
+    });
 
 // websockets
 
-    ws.on('connection', function connection(connection) {
-        connection.on('message', function incoming(message) {
+    ws.on('connection', function(connection) {
+        connection.on('message', function(message) {
             if (message) {
-                if (updateDates[message]) {
-                    connection.send(updateDates[message].toString());
+                if (message.substr(0, message.indexOf(':')) == "INTRO") {
+                    var caseID = message.substr(message.indexOf(':')+1, message.length);
+                    wsClientMap[caseID] = connection;
                 }
             }
         });

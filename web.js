@@ -1,6 +1,8 @@
 var http = require('http');
 var express = require('express');
+
 var app = express();
+
 var WebSocketServer = require('ws').Server;
 var bodyParser = require('body-parser');
 var mongo = require('mongodb');

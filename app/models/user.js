@@ -10,6 +10,11 @@ var userSchema = mongoose.Schema({
     email   : String,
     password: String,
     caseSets: [String],
+    color: {
+        r: Number,
+        g: Number,
+        b: Number
+    },
     verified: Boolean,
     resetPasswordToken: String,
     resetPasswordExpires: Date
