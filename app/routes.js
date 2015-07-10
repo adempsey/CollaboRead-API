@@ -85,10 +85,6 @@ module.exports = function(http, ws) {
     http.use(passport.initialize());
     http.use(passport.session());
 
-    http.get('/', function(req, res) {
-        res.render('selector');
-    });
-
 // http routes
 
     http.post(prefix+'login', bodyParserURLEncoded, passport.authenticate('local', {session: false}), function(req, res) {
