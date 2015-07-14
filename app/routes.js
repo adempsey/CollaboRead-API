@@ -15,6 +15,10 @@ fs.readFile(__dirname + "/colorFile/color.txt", function(err, data) {
     colorGen.setSavedValues(JSON.parse(data));
 });
 
+var JSX = require('node-jsx').install();
+var React = require('react');
+var CollaboreadApp = require('../app/components/CollaboreadApp.react.js');
+
 var nodemailer = require('nodemailer');
 var markdown = require('nodemailer-markdown').markdown;
 
@@ -85,7 +89,25 @@ module.exports = function(http, ws) {
     http.use(passport.initialize());
     http.use(passport.session());
 
-// http routes
+// web routes
+
+    http.get('/', function(req, res) {
+        Lectures.find({}, function(err, lectures) {
+
+            var cApp = React.createFactory(CollaboreadApp);
+            var markup = React.renderToString(
+                cApp({
+                    lectures: lectures
+                })
+            );
+            res.render('home', {
+                markup: markup,
+                state: JSON.stringify(lectures)
+            });
+        });
+    });
+
+// API routes
 
     http.post(prefix+'login', bodyParserURLEncoded, passport.authenticate('local', {session: false}), function(req, res) {
         User.findOne({'email': req.body.email}, function(err, user) {
